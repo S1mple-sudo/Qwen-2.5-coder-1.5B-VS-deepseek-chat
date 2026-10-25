@@ -53,6 +53,23 @@ def test_fixed_code_clears_rule(q):
     assert rule and rule not in findings, f"修复代码仍被规则 {rule} 命中（实际命中: {findings}）"
 
 
+@pytest.mark.parametrize("q", SEMGREP, ids=question_ids(SEMGREP))
+def test_fix_required_is_discriminating(q):
+    """`fix_required` 必须是「参考修复里有、漏洞代码里没有」的记号。
+
+    纯正则判定，不需要 semgrep。它保证这条约束真的能区分「修好」与「删掉」。
+    """
+    import re
+
+    req = q.get("fix_required") or []
+    if not req:
+        pytest.skip("该题属于移除型修复，没有安全替代要求")
+    for pat in req:
+        assert re.search(pat, q["fixed_code"], re.I), f"{q['id']} 的修复缺少 {pat}"
+        assert not re.search(pat, q["vulnerable_code"], re.I), \
+            f"{q['id']} 的漏洞代码里已经有 {pat}，该记号无法区分修复"
+
+
 # ---------------------------------------------------------------------------
 # functional 轨
 # ---------------------------------------------------------------------------

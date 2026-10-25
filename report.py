@@ -23,7 +23,8 @@ sys.stdout.reconfigure(encoding="utf-8")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.preservation import behavior_applicable, behavior_preserved  # noqa: E402
-from src.semgrep_runner import find_semgrep, normalize_check_id  # noqa: E402
+from src.remediation import elimination_ok  # noqa: E402
+from src.semgrep_runner import find_semgrep, run_semgrep_batch  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 QUESTIONS_PATH = os.path.join(ROOT, "questions.jsonl")
@@ -71,38 +72,10 @@ def load_model_output(path):
     return out
 
 
-def run_semgrep_batch(codes, rules_dir):
-    """批量扫描多段代码，返回 {id: set(check_id)}（已规范化）。
-
-    codes: {id: code}。一次 semgrep 进程扫完，避免逐题起进程。
-    """
-    import subprocess
-    import tempfile
-    semgrep_bin = find_semgrep()
-    if semgrep_bin is None:
-        return {}
-    with tempfile.TemporaryDirectory() as td:
-        for qid, code in codes.items():
-            with open(os.path.join(td, f"{qid}.py"), "w", encoding="utf-8") as f:
-                f.write(code or "")
-        cmd = [semgrep_bin, "scan", "--config", rules_dir, "--json",
-               "--no-git-ignore", td]
-        proc = subprocess.run(cmd, capture_output=True, text=True,
-                              encoding="utf-8", timeout=600)
-        if proc.returncode not in (0, 1):
-            raise RuntimeError(f"semgrep 运行失败 (rc={proc.returncode}): {proc.stderr[:2000]}")
-        try:
-            data = json.loads(proc.stdout or "{}")
-        except json.JSONDecodeError:
-            return {}
-    mapping = {}
-    for r in data.get("results", []):
-        base = os.path.basename(r.get("path", ""))
-        cid = r.get("check_id")
-        if base and cid:
-            qid = base[:-3] if base.endswith(".py") else base
-            mapping.setdefault(qid, set()).add(normalize_check_id(cid))
-    return mapping
+def run_semgrep_batch(codes, rules_dir):  # noqa: F811  —— 保留旧名，逻辑已移到 semgrep_runner
+    """批量扫描多段代码（委托给 semgrep_runner，供外部脚本沿用旧调用名）。"""
+    from src.semgrep_runner import run_semgrep_batch as _batch
+    return _batch(codes, rules_dir)
 
 
 def main():
@@ -111,6 +84,8 @@ def main():
     ap.add_argument("--model-output", default=None,
                     help="模型输出 JSONL（每行 {\"id\":..., \"code\":...}），缺省用参考修复自检")
     ap.add_argument("--report", default="data/processed/eval_report.json")
+    ap.add_argument("--selfcheck", action="store_true",
+                    help="额外跑评分器自检：用「删行 / pass」两种作弊答案验证不给分（多一次 semgrep 扫描）")
     args = ap.parse_args()
 
     questions = load_questions(args.in_path)
@@ -159,8 +134,9 @@ def main():
                 semgrep_pending += 1
             else:
                 findings = semgrep_findings.get(q["id"], set())
-                rule = q.get("semgrep_rule_id")
-                elim = (rule not in findings) if rule else (not findings)
+                rule = q.get("semgrep_rule_id") or ""
+                # 漏洞消除 = 规则不再命中 且 出现该题要求的安全替代（防止「删掉危险行」刷分）
+                elim = elimination_ok(rule, findings, candidate, q.get("fix_required"))
 
         if elim is not None:
             elim_judged += 1
@@ -182,6 +158,8 @@ def main():
     elim_rate = eliminated / elim_judged if elim_judged else 0.0
     behavior_rate = behavior_ok / applicable if applicable else 0.0
     sfr = secure_fix / applicable_judged if applicable_judged else 0.0
+    # 统一分母：同一个 172 题基座上的联合通过率（功能轴不适用的题计入分母、不计入分子）
+    unified_rate = secure_fix / len(evaluable) if evaluable else 0.0
 
     report = {
         "total_questions": len(questions),
@@ -202,11 +180,28 @@ def main():
             "denominator": applicable_judged,
             "rate": round(sfr, 4),
         },
+        # 统一分母口径：secure_fix / 全部可评测题（172）
+        "unified": {
+            "joint": secure_fix,
+            "denominator": len(evaluable),
+            "rate": round(unified_rate, 4),
+            "note": "功能轴不适用的题计入分母、不计入分子",
+        },
         "notes": {
             "semgrep_installed": has_semgrep,
             "mode": "self-check (reference fix)" if model_out is None else "model output",
+            "semgrep_rule": "规则不再命中 + 必须有安全替代（src/remediation.py）",
         },
     }
+
+    # 评分器自检（可选）：用「删行 / pass」两种作弊答案跑同一套判定
+    selfcheck = None
+    if args.selfcheck and has_semgrep:
+        from src import cheat_check
+        semi = [q for q in evaluable if q["eval_method"] == "semgrep"]
+        func = [q for q in evaluable if q["eval_method"] == "functional"]
+        selfcheck = cheat_check.run(semi, func, RULES_DIR)
+        report["scorer_selfcheck"] = selfcheck
 
     rep_dir = os.path.dirname(args.report)
     if rep_dir:  # --report 只给文件名（无目录部分）时 makedirs('') 会报错
@@ -215,20 +210,31 @@ def main():
         json.dump(report, f, ensure_ascii=False, indent=2)
 
     # 人类可读打印
-    print("=" * 60)
+    print("=" * 64)
     print("评测指标汇总")
-    print("=" * 60)
+    print("=" * 64)
     print(f"总题数: {report['total_questions']}  |  可评测题: {report['evaluable']}")
     print(f"模式: {report['notes']['mode']}  |  semgrep 已装: {has_semgrep}")
-    print("-" * 60)
+    print("-" * 64)
     v = report["vulnerability_elimination"]
-    print(f"[子集1] 全量漏洞消除率: {v['eliminated']}/{v['judged']} = {v['rate']:.2%}"
+    print(f"[1] 安全通过率（漏洞消除）: {v['eliminated']}/{v['judged']} = {v['rate']:.2%}"
           + (f"  (semgrep 轨 {v['semgrep_pending']} 题待验证)" if v["semgrep_pending"] else ""))
     b = report["behavior_preservation"]
-    print(f"[分项 ] 功能未破坏率:   {b['preserved']}/{b['applicable']} = {b['rate']:.2%}")
+    print(f"[2] 功能通过率（功能轴适用）: {b['preserved']}/{b['applicable']} = {b['rate']:.2%}")
     s = report["SFR"]
-    print(f"[子集2] SFR(安全修复率): {s['secure_fix']}/{s['denominator']} = {s['rate']:.2%}")
-    print("=" * 60)
+    print(f"[3] 联合通过率 SFR（安全∧功能）: {s['secure_fix']}/{s['denominator']} = {s['rate']:.2%}")
+    u = report["unified"]
+    print(f"[4] 全题集联合（分母 {u['denominator']}）: {u['joint']}/{u['denominator']} = {u['rate']:.2%}")
+    if selfcheck:
+        d, ss, sf = selfcheck["deletion_cheat"], selfcheck["stub_semgrep"], selfcheck["stub_functional"]
+        print("-" * 64)
+        print(f"[自检] 作弊答案通过数（应为 0）: 删行 {d['passed']}/{d['total']} · "
+              f"pass(semgrep) {ss['passed']}/{ss['total']} · "
+              f"pass(functional) {sf['passed']}/{sf['total']}")
+        if d["excluded"]:
+            print(f"       （另有 {d['excluded']} 道属移除型修复，未纳入删行自检："
+                  f"{', '.join(d['excluded_rules'])}）")
+    print("=" * 64)
     print(f"报告已写入: {args.report}")
 
 

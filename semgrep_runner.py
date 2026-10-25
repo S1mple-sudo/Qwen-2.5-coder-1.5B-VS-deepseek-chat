@@ -137,3 +137,41 @@ def run_semgrep(code: str, config_dir: str, language: str = "python") -> list:
             if cid:
                 rule_ids.add(normalize_check_id(cid))
         return sorted(rule_ids)
+
+
+def run_semgrep_batch_detail(codes: dict, config_dir: str, timeout: int = 600) -> dict:
+    """一次 semgrep 进程扫多段代码，返回带位置的结果。
+
+    codes: {qid: code}
+    返回: {qid: [(规则 id, 起始行, 结束行)]}（行号 1-based）
+    """
+    semgrep_bin = find_semgrep()
+    if semgrep_bin is None or not codes:
+        return {}
+    with tempfile.TemporaryDirectory() as td:
+        for qid, code in codes.items():
+            with open(os.path.join(td, f"{qid}.py"), "w", encoding="utf-8") as f:
+                f.write(code or "")
+        cmd = [semgrep_bin, "scan", "--config", config_dir, "--json", "--no-git-ignore", td]
+        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", timeout=timeout)
+        if proc.returncode not in (0, 1):
+            raise RuntimeError(f"semgrep 运行失败 (rc={proc.returncode}): {proc.stderr[:2000]}")
+        try:
+            data = json.loads(proc.stdout or "{}")
+        except json.JSONDecodeError:
+            return {}
+    hits = {}
+    for r in data.get("results", []):
+        base = os.path.basename(r.get("path", ""))
+        cid = r.get("check_id")
+        if base and cid:
+            qid = base[:-3] if base.endswith(".py") else base
+            hits.setdefault(qid, []).append(
+                (normalize_check_id(cid), r["start"]["line"], r["end"]["line"]))
+    return hits
+
+
+def run_semgrep_batch(codes: dict, config_dir: str, timeout: int = 600) -> dict:
+    """一次 semgrep 进程扫多段代码，返回 {qid: set(规则 id)}。"""
+    detail = run_semgrep_batch_detail(codes, config_dir, timeout)
+    return {qid: {h[0] for h in hits} for qid, hits in detail.items()}

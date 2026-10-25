@@ -43,8 +43,8 @@ jobs:
           python -m pip install -r requirements.txt
           semgrep --version
       - name: 参考修复自检
-        run: python src/report.py --report data/processed/eval_report.json
-      - name: 断言指标 = 1.0
+        run: python src/report.py --selfcheck --report data/processed/eval_report.json
+      - name: 断言指标 = 1.0 且作弊答案 = 0
         run: |
           python - <<'PY'
           import json
@@ -53,7 +53,12 @@ jobs:
           assert v["semgrep_pending"] == 0, v
           assert v["rate"] == 1.0, v
           assert s["rate"] == 1.0, s
+          sc = r["scorer_selfcheck"]
+          assert sc["deletion_cheat"]["passed"] == 0, sc["deletion_cheat"]
+          assert sc["stub_semgrep"]["passed"] == 0, sc["stub_semgrep"]
+          assert sc["stub_functional"]["passed"] == 0, sc["stub_functional"]
           print("self-check OK:", v["eliminated"], "/", v["judged"], "SFR", s["secure_fix"], "/", s["denominator"])
+          print("cheat:", sc["deletion_cheat"]["passed"], sc["stub_semgrep"]["passed"], sc["stub_functional"]["passed"])
           PY
 
   # 慢测试（56 题 × 2 次 semgrep 进程），只在手动触发时跑
@@ -71,3 +76,5 @@ jobs:
           python -m pip install -r requirements.txt
       - name: 黄金校验（含 semgrep 轨）
         run: python -m pytest tests/test_golden.py -m semgrep -q
+      - name: 评分器自检（作弊答案必须 0 分）
+        run: python -m pytest tests/test_scorer_robustness.py -m semgrep -q

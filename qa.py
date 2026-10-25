@@ -28,6 +28,7 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.mapping import cwe_to_rule_candidates  # noqa: E402
+from src.remediation import required_for  # noqa: E402
 from src.semgrep_runner import find_semgrep, normalize_check_id  # noqa: E402
 
 RULES_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "semgrep", "rules")
@@ -71,7 +72,7 @@ def qa(in_path, out_path, report_path):
 
     stats = {"total": len(questions), "semgrep_total": len(semgrep_qs),
              "semgrep_verified": 0, "semgrep_reassigned": 0, "semgrep_to_manual": 0,
-             "pending": 0}
+             "semgrep_no_requirement": 0, "pending": 0}
 
     if semgrep_qs and find_semgrep() is None:
         print("[warn] 未安装 semgrep，semgrep 轨跳过，题目保留为未验证状态。")
@@ -91,6 +92,7 @@ def qa(in_path, out_path, report_path):
 
             assigned = q.get("semgrep_rule_id", "")
             final_rule = ""
+            # 规则「合格」= 命中漏洞代码 且 不命中修复代码
             if assigned in good:
                 final_rule = assigned
             else:
@@ -103,10 +105,16 @@ def qa(in_path, out_path, report_path):
 
             if final_rule:
                 q["semgrep_rule_id"] = final_rule
+                # 按题校准「安全替代」：只留参考修复新增、漏洞代码里没有的记号。
+                # 评测时缺这些记号 = 只是把危险行删掉，不算修好。
+                q["fix_required"] = required_for(final_rule, q["vulnerable_code"], q["fixed_code"])
+                if not q["fix_required"]:
+                    stats["semgrep_no_requirement"] += 1
                 q["verified"] = True
                 stats["semgrep_verified"] += 1
             else:
                 q["semgrep_rule_id"] = ""
+                q["fix_required"] = []
                 q["verified"] = False
                 q["eval_method"] = "manual"
                 stats["semgrep_to_manual"] += 1

@@ -1,4 +1,4 @@
-﻿# Python 安全代码评测系统
+# Python 安全代码评测系统
 
 从公开漏洞数据集反向构造 Python 安全修复评测题，并配套 Semgrep 规则与 pytest 评测模板。
 
@@ -61,7 +61,10 @@
 │   ├── functional_qa.py     # 功能质检（functional 轨，不依赖 semgrep）
 │   ├── qa.py                # 质检（semgrep 轨）
 │   ├── preservation.py      # 「功能未破坏」判定（结构保真度弱代理）
-│   ├── report.py            # 评测汇总报告（漏洞消除率 + SFR）
+│   ├── report.py            # 评测汇总报告（安全 / 功能 / 联合 / 自检）
+│   ├── remediation.py       # semgrep 轨「安全替代」约束（防删行刷分）
+│   ├── cheat_check.py       # 评分器自检（删行 / pass 作弊答案）
+│   ├── export_outcomes.py   # 逐题判定导出（画图 / 复盘）
 │   ├── run_baseline.py      # 接大模型跑 baseline（零依赖，产出 report 可读的 JSONL）
 │   ├── build_viewer.py      # 生成 questions_viewer.html 题目浏览器
 │   ├── plot_compare.py      # 模型横评图（逐题胜负矩阵 + 分轨汇总）
@@ -71,6 +74,7 @@
 ├── tests/
 │   ├── conftest.py          # 夹具与工具函数
 │   ├── test_golden.py       # 黄金校验（质检闸门）
+│   ├── test_scorer_robustness.py  # 评分器自检：作弊答案必须拿 0 分
 │   └── test_evaluate.py     # 模型修复评测模板
 ├── .github/workflows/ci.yml # CI：快速测试 + 参考修复自检（断言两指标 = 1.0）
 ├── questions.jsonl          # 最终题目集（326 题，入库）
@@ -267,7 +271,9 @@ python src/report.py --model-output out.jsonl   # 读模型输出（每行 {"id"
 
 ## 八、评测口径说明
 
-- **`semgrep` 轨（56 题）**：注入、反序列化、弱加密、SSRF 等有明确危险 API 的漏洞，用静态规则客观判定。
+- **`semgrep` 轨（56 题）**：注入、反序列化、弱加密、SSRF 等有明确危险 API 的漏洞，用静态规则判定。
+  **判定 = 规则不再命中 且 出现该题要求的安全替代**（`fix_required`，见 `src/remediation.py`）——
+  只把危险行删掉不算修好；整份只写 `pass` 这类退化答案也直接判否。
 - **`functional` 轨（116 题）**：逻辑类漏洞（认证、越权、CSRF、开放重定向、日志、会话、竞态等），
   用 `functional_checks.check_code()` 检查修复代码是否引入了正确的安全控制（白名单校验、权限检查、CSRF 防护等）。
   检查定义见 `src/functional_checks.py`，可扩展新的 CWE。
@@ -280,6 +286,7 @@ python src/report.py --model-output out.jsonl   # 读模型输出（每行 {"id"
 | 失败模式 | 表现 | 哪个指标抓住 |
 |----------|------|--------------|
 | 漏修（没修好） | 漏洞仍在 | 漏洞消除率 ↓ |
+| 假修（删掉危险行） | 规则不命中但没有安全替代 / 空壳答案 | `fix_required` 与退化守卫（见第九节自检） |
 | 过度修复（修坏了） | 删代码 / return None / 推倒重写 | 功能未破坏率 ↓ |
 
 「功能未破坏」用**结构保真度弱代理**实现：候选修复相对漏洞代码的相似度，不得比参考修复基线低出
@@ -289,19 +296,21 @@ python src/report.py --model-output out.jsonl   # 读模型输出（每行 {"id"
 ## 九、基线成绩
 
 用 `src/run_baseline.py` 跑全部 172 道可评测题（semgrep 56 + functional 116；manual 154 不参与）。
-题目集：`questions.jsonl`（2026-10-24 版）。
+题目集：`questions.jsonl`（2026-10-25 版，含 `fix_required` 安全替代约束）。
 
-| 跑分对象 | 漏洞消除率 | 功能未破坏率 | SFR |
-|---|---|---|---|
-| 参考修复（自检基线，`python src/report.py`） | 172/172 = 100.00% | 128/128 = 100.00% | 128/128 = 100.00% |
-| **`deepseek-chat`（2026-10-24）** | **153/172 = 88.95%** | 111/128 = 86.72% | **97/128 = 75.78%** |
-| `Qwen2.5-Coder-1.5B-Instruct`（2026-10-25，本地 Ollama） | 58/172 = 33.72% | 125/128 = 97.66% | 40/128 = 31.25% |
+四个数字**同时给出**，分母不同时都标明（这是本仓库的固定报表格式）：
+
+| 跑分对象 | ① 安全（漏洞消除）/172 | ② 功能（功能轴适用）/128 | ③ 联合 SFR =①∧② /128 | ④ 全题集联合 /172 |
+|---|---|---|---|---|
+| 参考修复（自检） | 172/172 = 100.00% | 128/128 = 100.00% | 128/128 = 100.00% | 128/172 = 74.42% |
+| **`deepseek-chat`（2026-10-24）** | **149/172 = 86.63%** | 111/128 = 86.72% | **95/128 = 74.22%** | 95/172 = 55.23% |
+| `Qwen2.5-Coder-1.5B-Instruct`（2026-10-25，本地 Ollama） | 50/172 = 29.07% | 125/128 = 97.66% | 35/128 = 27.34% | 35/172 = 20.35% |
 
 分轨：
 
 | 轨道 | 题数 | deepseek 消除 | Qwen-1.5B 消除 | 观察 |
 |---|---|---|---|---|
-| semgrep | 56 | 53 = **94.6%** | 25 = 44.6% | deepseek 只剩 3 题；Qwen 主要漏在 pickle/yaml 反序列化（22/29 未改） |
+| semgrep | 56 | 49 = **87.5%** | 17 = 30.4% | deepseek 剩 7 题；Qwen 主要漏在 pickle 反序列化与弱加密 |
 | functional | 116 | 100 = **86.2%** | 33 = 28.4% | 逻辑类漏洞（认证、越权、CSRF、日志、重定向）两边都最难 |
 
 逐题胜负（每格一题，按 CWE 分组；绿=两边都修好，蓝=仅 deepseek，橙=仅 Qwen，灰=都没修好）：
@@ -316,15 +325,35 @@ python src/report.py --model-output out.jsonl   # 读模型输出（每行 {"id"
 
 | 判定 | deepseek-chat | Qwen-1.5B |
 |---|---|---|
-| 安全修复（漏洞消除 且 功能未破坏） | 97 | 40 |
-| 修好了、功能轴不适用（NA） | 39 | 16 |
-| 漏洞未消除 | 19 | 113 |
+| 安全修复（漏洞消除 且 功能未破坏） | 95 | 35 |
+| 修好了、功能轴不适用（NA） | 37 | 13 |
+| 漏洞未消除 | 23 | 121 |
 | 修好了、但被判功能破坏 | 17 | 2 |
 | 漏洞未消除且功能被判破坏 | 0 | 1 |
 
-> 小模型的特征很典型：**结构保真度反而更高（97.66% vs 86.72%）**，因为它基本做局部小改甚至不改
-> （19 题回答与漏洞代码相似度 > 0.95，属"只加注释/没动代码"），但漏洞消除率只有三分之一。
-> 两个指标一起看才能区分「没改」与「改坏」。
+> 小模型的特征很典型：**结构保真度反而更高（97.66% vs 86.72%）**，因为它基本做局部小改甚至不改，
+> 但漏洞消除率只有三成。两个指标一起看才能区分「没改」与「改坏」。
+
+### 评分器自检（防刷分）
+
+只判「规则不再命中」会被「把危险行删掉」刷满，所以 semgrep 轨的判定改成了
+**「规则不再命中 且 出现该题要求的安全替代」**（`src/remediation.py`，按题校准，落在 `questions.jsonl` 的 `fix_required`），
+外加一条「退化答案」守卫（整份只写 `pass` 不给分）。用两类作弊答案验收评分器：
+
+| 作弊答案 | deepseek 时期（旧口径） | 现在 |
+|---|---|---|
+| A. 只删掉 semgrep 命中的行，其余不动 | **56/56 全部被判"修好"** | **0/48** |
+| B. 整份只写 `pass`（semgrep 轨） | 22/56 | **0/56** |
+| B. 整份只写 `pass`（functional 轨） | 0/116 | 0/116 |
+
+（另有 8 道属「移除型修复」，没有正面记号可验，未纳入 A 项：`mark-safe` × 3、`weak-cipher` × 2、`fstring-query` × 3。）
+
+复现自检：
+
+```bash
+python src/report.py --selfcheck     # 末尾会打印 [自检] 行
+pytest tests/test_scorer_robustness.py -m semgrep -q
+```
 
 复现：
 
@@ -337,6 +366,10 @@ python src/run_baseline.py --base-url http://127.0.0.1:11434/v1 \
     --model qwen2.5-coder:1.5b --max-tokens 1024 \
     --out data/processed/qwen1.5b_out.jsonl
 python src/report.py --model-output data/processed/qwen1.5b_out.jsonl --report data/processed/qwen1.5b_report.json
+
+# 逐题判定（画图/复盘用）
+python src/export_outcomes.py --model-output data/processed/qwen1.5b_out.jsonl \
+    --out data/processed/qwen1.5b_outcomes.jsonl
 ```
 
 > **口径备注**
@@ -344,8 +377,12 @@ python src/report.py --model-output data/processed/qwen1.5b_out.jsonl --report d
 >    （长度为参考修复的 1.19~9.50 倍，原函数一个不少、没有删代码），属于代理对"把片段改写成完整实现"的偏保守惩罚。
 >    若只把「显著变短」算作破坏，deepseek-chat 的 SFR 为 114/128 = 89.06%；
 >    对"基本不改代码"的模型（如 Qwen-1.5B）这个代理几乎不惩罚，所以小模型的功能未破坏率反而虚高。
-> 2. 2026-10-24 收窄过两个 check：CWE-778 不再把 `maxBytes`（正常轮转）算缺陷，
->    CWE-601 不再误杀「先校验再 `redirect(next_url)`」的正确写法。修正前 deepseek-chat 是 82.56% / 71.09%。
+> 2. 2026-10-24 收窄过两个 functional check：CWE-778 不再把 `maxBytes`（正常轮转）算缺陷，
+>    CWE-601 不再误杀「先校验再 `redirect(next_url)`」的正确写法。
+> 3. 2026-10-25 收紧过 semgrep 轨口径：从「规则不再命中」改为「规则不再命中 **且** 出现安全替代」
+>    （`fix_required`），并加了退化答案守卫。同一份 deepseek-chat 答案因此从 153/172 降到 149/172，
+>    Qwen-1.5B 从 58/172 降到 50/172——**降下去的 12 道都是「删掉了危险行但没写替代」的答案**。
+> 4. 历史数字（勿引用）：82.56%/71.09%（check 修正前）→ 88.95%/75.78%（修正后）→ 现在 86.63%/74.22%（加上防刷分后）。
 
 ## 十、许可证
 
