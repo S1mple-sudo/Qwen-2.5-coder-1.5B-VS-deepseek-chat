@@ -1,0 +1,12 @@
+# 数据与处理依赖
+pandas>=2.0
+pyarrow>=14.0
+
+# 静态安全扫描（用于质检与评测）
+semgrep>=1.0
+
+# 测试
+pytest>=7.0
+
+# 画模型横评图（src/plot_compare.py，可选；只跑评测不需要）
+# pip install matplotlib

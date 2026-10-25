@@ -1,0 +1,236 @@
+# -*- coding: utf-8 -*-
+"""评测汇总报告：输出两个指标。
+
+指标定义（一个修复「做对」= 同时满足两条件）：
+  1. 漏洞已消除：semgrep 轨规则不再命中 / functional 轨功能断言通过
+  2. 功能未破坏：结构保真度不低于参考修复基线（仅功能轴适用的题）
+
+分两个子集上报：
+  - 全量漏洞消除率 = 漏洞消除题数 / 可评测题数（236）
+  - SFR（安全修复率）= (漏洞消除 且 功能未破坏) 题数 / 功能轴适用题数（172）
+
+用法：
+  python src/report.py                            # 用参考修复自检（SFR 应为 1.0）
+  python src/report.py --model-output out.jsonl   # 读模型输出（每行 {"id":..., "code":...}）
+  python src/report.py --report data/processed/eval_report.json
+"""
+import argparse
+import json
+import os
+import sys
+
+sys.stdout.reconfigure(encoding="utf-8")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from src.preservation import behavior_applicable, behavior_preserved  # noqa: E402
+from src.semgrep_runner import find_semgrep, normalize_check_id  # noqa: E402
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+QUESTIONS_PATH = os.path.join(ROOT, "questions.jsonl")
+RULES_DIR = os.path.join(ROOT, "semgrep", "rules")
+
+
+def load_questions(path=QUESTIONS_PATH):
+    if not os.path.exists(path):
+        return []
+    qs = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                qs.append(json.loads(line))
+    return qs
+
+
+def run_functional_test(q, candidate_code):
+    test_code = q.get("functional_test")
+    if not test_code:
+        return False
+    ns = {"candidate_code": candidate_code, "__builtins__": __builtins__}
+    try:
+        exec(test_code, ns)
+        return True
+    except AssertionError:
+        return False
+    except Exception:
+        return False
+
+
+def load_model_output(path):
+    """读模型输出 JSONL -> {id: code}。缺省返回 None（用参考修复自检）。"""
+    if not path:
+        return None
+    out = {}
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            d = json.loads(line)
+            out[d["id"]] = d.get("code") or d.get("fixed_code") or ""
+    return out
+
+
+def run_semgrep_batch(codes, rules_dir):
+    """批量扫描多段代码，返回 {id: set(check_id)}（已规范化）。
+
+    codes: {id: code}。一次 semgrep 进程扫完，避免逐题起进程。
+    """
+    import subprocess
+    import tempfile
+    semgrep_bin = find_semgrep()
+    if semgrep_bin is None:
+        return {}
+    with tempfile.TemporaryDirectory() as td:
+        for qid, code in codes.items():
+            with open(os.path.join(td, f"{qid}.py"), "w", encoding="utf-8") as f:
+                f.write(code or "")
+        cmd = [semgrep_bin, "scan", "--config", rules_dir, "--json",
+               "--no-git-ignore", td]
+        proc = subprocess.run(cmd, capture_output=True, text=True,
+                              encoding="utf-8", timeout=600)
+        if proc.returncode not in (0, 1):
+            raise RuntimeError(f"semgrep 运行失败 (rc={proc.returncode}): {proc.stderr[:2000]}")
+        try:
+            data = json.loads(proc.stdout or "{}")
+        except json.JSONDecodeError:
+            return {}
+    mapping = {}
+    for r in data.get("results", []):
+        base = os.path.basename(r.get("path", ""))
+        cid = r.get("check_id")
+        if base and cid:
+            qid = base[:-3] if base.endswith(".py") else base
+            mapping.setdefault(qid, set()).add(normalize_check_id(cid))
+    return mapping
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--in", dest="in_path", default=QUESTIONS_PATH)
+    ap.add_argument("--model-output", default=None,
+                    help="模型输出 JSONL（每行 {\"id\":..., \"code\":...}），缺省用参考修复自检")
+    ap.add_argument("--report", default="data/processed/eval_report.json")
+    args = ap.parse_args()
+
+    questions = load_questions(args.in_path)
+    model_out = load_model_output(args.model_output)
+    has_semgrep = find_semgrep() is not None
+
+    evaluable = [q for q in questions if q.get("eval_method") in ("semgrep", "functional")]
+
+    sg_total = sum(1 for q in evaluable if q["eval_method"] == "semgrep")
+    if not has_semgrep and sg_total:
+        print(f"[warn] 未找到 semgrep：semgrep 轨 {sg_total} 题无法判定（记为 pending），"
+              f"下面的指标只在剩下的 {len(evaluable) - sg_total} 道 functional 题上计算，不能与完整基线直接比较。",
+              file=sys.stderr)
+        print("       安装：pip install semgrep  或设置环境变量 SEMGREP_BIN 指向 semgrep 可执行文件",
+              file=sys.stderr)
+
+    # 批量扫描 semgrep 轨（一次 semgrep 进程，避免逐题起进程）
+    semgrep_findings = {}
+    if has_semgrep:
+        sg_codes = {}
+        for q in evaluable:
+            if q["eval_method"] == "semgrep":
+                candidate = (model_out or {}).get(q["id"]) if model_out is not None else q["fixed_code"]
+                sg_codes[q["id"]] = candidate or ""
+        semgrep_findings = run_semgrep_batch(sg_codes, RULES_DIR)
+
+    # 计数
+    eliminated = 0        # 漏洞消除题数（可判定的）
+    elim_judged = 0       # 实际判定了漏洞消除的题数
+    semgrep_pending = 0   # 因未装 semgrep 而未判定的 semgrep 题数
+    applicable = 0        # 功能轴适用题数
+    behavior_ok = 0       # 功能未破坏题数（适用集内）
+    applicable_judged = 0  # 功能轴适用 且 漏洞消除可判定的题数（SFR 分母）
+    secure_fix = 0        # 漏洞消除 且 功能未破坏（适用且可判定集内）
+
+    for q in evaluable:
+        candidate = (model_out or {}).get(q["id"]) if model_out is not None else q["fixed_code"]
+        candidate = candidate or ""
+
+        # 1) 漏洞消除
+        elim = None
+        if q["eval_method"] == "functional":
+            elim = run_functional_test(q, candidate)
+        else:  # semgrep
+            if not has_semgrep:
+                semgrep_pending += 1
+            else:
+                findings = semgrep_findings.get(q["id"], set())
+                rule = q.get("semgrep_rule_id")
+                elim = (rule not in findings) if rule else (not findings)
+
+        if elim is not None:
+            elim_judged += 1
+            if elim:
+                eliminated += 1
+
+        # 2) 功能未破坏（仅功能轴适用的题）
+        if behavior_applicable(q["vulnerable_code"], q["fixed_code"]):
+            applicable += 1
+            pres = behavior_preserved(q["vulnerable_code"], candidate, q["fixed_code"])
+            if pres:
+                behavior_ok += 1
+            if elim is not None:
+                applicable_judged += 1
+                if elim and pres:
+                    secure_fix += 1
+
+    # 汇总
+    elim_rate = eliminated / elim_judged if elim_judged else 0.0
+    behavior_rate = behavior_ok / applicable if applicable else 0.0
+    sfr = secure_fix / applicable_judged if applicable_judged else 0.0
+
+    report = {
+        "total_questions": len(questions),
+        "evaluable": len(evaluable),
+        "vulnerability_elimination": {
+            "eliminated": eliminated,
+            "judged": elim_judged,
+            "rate": round(elim_rate, 4),
+            "semgrep_pending": semgrep_pending,
+        },
+        "behavior_preservation": {
+            "applicable": applicable,
+            "preserved": behavior_ok,
+            "rate": round(behavior_rate, 4),
+        },
+        "SFR": {
+            "secure_fix": secure_fix,
+            "denominator": applicable_judged,
+            "rate": round(sfr, 4),
+        },
+        "notes": {
+            "semgrep_installed": has_semgrep,
+            "mode": "self-check (reference fix)" if model_out is None else "model output",
+        },
+    }
+
+    rep_dir = os.path.dirname(args.report)
+    if rep_dir:  # --report 只给文件名（无目录部分）时 makedirs('') 会报错
+        os.makedirs(rep_dir, exist_ok=True)
+    with open(args.report, "w", encoding="utf-8") as f:
+        json.dump(report, f, ensure_ascii=False, indent=2)
+
+    # 人类可读打印
+    print("=" * 60)
+    print("评测指标汇总")
+    print("=" * 60)
+    print(f"总题数: {report['total_questions']}  |  可评测题: {report['evaluable']}")
+    print(f"模式: {report['notes']['mode']}  |  semgrep 已装: {has_semgrep}")
+    print("-" * 60)
+    v = report["vulnerability_elimination"]
+    print(f"[子集1] 全量漏洞消除率: {v['eliminated']}/{v['judged']} = {v['rate']:.2%}"
+          + (f"  (semgrep 轨 {v['semgrep_pending']} 题待验证)" if v["semgrep_pending"] else ""))
+    b = report["behavior_preservation"]
+    print(f"[分项 ] 功能未破坏率:   {b['preserved']}/{b['applicable']} = {b['rate']:.2%}")
+    s = report["SFR"]
+    print(f"[子集2] SFR(安全修复率): {s['secure_fix']}/{s['denominator']} = {s['rate']:.2%}")
+    print("=" * 60)
+    print(f"报告已写入: {args.report}")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,73 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # 快速闸门：不依赖 semgrep，20 秒内跑完
+  test:
+    name: tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 安装依赖
+        run: |
+          python -m pip install -U pip
+          python -m pip install -r requirements.txt
+      - name: 编译检查
+        run: python -c "import glob,py_compile;[py_compile.compile(f,doraise=True) for f in glob.glob('src/*.py')+glob.glob('tests/*.py')]"
+      - name: 黄金校验 + 评测模板（跳过 semgrep 轨）
+        run: python -m pytest tests/ -m "not semgrep" -q
+
+  # 完整自检：装 semgrep，跑参考修复自检，断言两个指标都是 1.0
+  selfcheck:
+    name: report self-check (semgrep)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 安装依赖（含 semgrep）
+        run: |
+          python -m pip install -U pip
+          python -m pip install -r requirements.txt
+          semgrep --version
+      - name: 参考修复自检
+        run: python src/report.py --report data/processed/eval_report.json
+      - name: 断言指标 = 1.0
+        run: |
+          python - <<'PY'
+          import json
+          r = json.load(open("data/processed/eval_report.json", encoding="utf-8"))
+          v, s = r["vulnerability_elimination"], r["SFR"]
+          assert v["semgrep_pending"] == 0, v
+          assert v["rate"] == 1.0, v
+          assert s["rate"] == 1.0, s
+          print("self-check OK:", v["eliminated"], "/", v["judged"], "SFR", s["secure_fix"], "/", s["denominator"])
+          PY
+
+  # 慢测试（56 题 × 2 次 semgrep 进程），只在手动触发时跑
+  semgrep-golden:
+    name: golden tests (semgrep track, manual)
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: |
+          python -m pip install -U pip
+          python -m pip install -r requirements.txt
+      - name: 黄金校验（含 semgrep 轨）
+        run: python -m pytest tests/test_golden.py -m semgrep -q

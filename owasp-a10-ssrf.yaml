@@ -1,0 +1,59 @@
+rules:
+  - id: python.security.ssrf.urlopen-user-input
+    mode: taint
+    languages: [python]
+    severity: ERROR
+    message: >
+      使用用户可控的 URL 直接发起请求，存在 SSRF（服务端请求伪造）风险，
+      可被用于探测/攻击内网服务。应对目标 URL 做白名单校验，
+      解析后拒绝内网/回环地址（127.0.0.0/8、169.254.169.254、10.0.0.0/8 等），
+      并限制可访问的协议与端口。
+    pattern-sources:
+      - pattern: request.args.get(...)
+      - pattern: request.args[...]
+      - pattern: request.form.get(...)
+      - pattern: request.form[...]
+      - pattern: request.GET.get(...)
+      - pattern: request.GET[...]
+      - pattern: request.POST.get(...)
+      - pattern: request.POST[...]
+      - pattern: request.data
+      - pattern: request.get_data(...)
+    pattern-sinks:
+      - pattern: requests.get($URL, ...)
+      - pattern: requests.post($URL, ...)
+      - pattern: requests.request($METHOD, $URL, ...)
+      - pattern: httpx.get($URL, ...)
+      - pattern: urllib.request.urlopen($URL)
+      - pattern: urlopen($URL)
+    metadata:
+      cwe: "CWE-918: Server-Side Request Forgery (SSRF)"
+      owasp: "A10:2021 - Server-Side Request Forgery (SSRF)"
+      category: security
+      confidence: MEDIUM
+
+  - id: python.security.ssrf.requests-user-input
+    mode: taint
+    languages: [python]
+    severity: ERROR
+    message: >
+      使用用户可控的 URL 调用 requests/httpx 发起请求，存在 SSRF 风险。
+      应对 URL 做白名单校验并阻断内网地址。
+    pattern-sources:
+      - pattern: request.args.get(...)
+      - pattern: request.args[...]
+      - pattern: request.GET.get(...)
+      - pattern: request.GET[...]
+      - pattern: request.POST.get(...)
+      - pattern: request.POST[...]
+      - pattern: request.data
+    pattern-sinks:
+      - pattern: requests.get($URL, ...)
+      - pattern: requests.post($URL, ...)
+      - pattern: requests.request($METHOD, $URL, ...)
+      - pattern: httpx.get($URL, ...)
+    metadata:
+      cwe: "CWE-918: Server-Side Request Forgery (SSRF)"
+      owasp: "A10:2021 - Server-Side Request Forgery (SSRF)"
+      category: security
+      confidence: MEDIUM

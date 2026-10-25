@@ -1,0 +1,38 @@
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ---------- 本机私有配置（不入库）----------
+.local_semgrep_paths
+.env
+.env.*
+*.local
+
+# ---------- 原始数据：8.6 MB、且许可受限，按 README 自行下载 ----------
+data/raw/
+data/processed/
+
+# ---------- 运行/构建产物 ----------
+questions.backup-*.jsonl
+*_out.jsonl
+baseline_report.json
+dist/
+*.log
+
+# ---------- 内部工作记录（不对外）----------
+.workbuddy/
+HANDOFF_PROMPTS.md
+
+# ---------- 系统 ----------
+Thumbs.db
+desktop.ini
+.DS_Store

@@ -1,0 +1,191 @@
+rules:
+  # ---------------- SQL 注入（taint） ----------------
+  - id: python.security.sql-injection.fstring-query
+    mode: taint
+    languages: [python]
+    severity: ERROR
+    message: >
+      用户输入未经参数化直接进入 SQL 查询，存在 SQL 注入风险。
+      应改用参数化查询（占位符 %s / ?），将参数与语句分离。
+    pattern-sources:
+      - pattern: request.args.get(...)
+      - pattern: request.args[...]
+      - pattern: request.form.get(...)
+      - pattern: request.form[...]
+      - pattern: request.values.get(...)
+      - pattern: request.values[...]
+      - pattern: request.GET.get(...)
+      - pattern: request.GET[...]
+      - pattern: request.POST.get(...)
+      - pattern: request.POST[...]
+      - pattern: request.data
+      - pattern: request.get_data(...)
+    pattern-sinks:
+      - pattern: $CURSOR.execute($QUERY, ...)
+      - pattern: $CURSOR.executemany($QUERY, ...)
+      - pattern: $CURSOR.executescript($QUERY)
+      - pattern: $MODEL.objects.raw($QUERY)
+      - pattern: $MODEL.objects.extra(where=[$QUERY])
+    metadata:
+      cwe: "CWE-89: SQL Injection"
+      owasp: "A03:2021 - Injection"
+      category: security
+      confidence: HIGH
+
+  - id: python.security.sql-injection.concat-query
+    mode: taint
+    languages: [python]
+    severity: ERROR
+    message: >
+      用户输入未经参数化直接拼接进 SQL 查询，存在 SQL 注入风险。
+      应改用参数化查询（占位符 %s / ?）。
+    pattern-sources:
+      - pattern: request.args.get(...)
+      - pattern: request.args[...]
+      - pattern: request.form.get(...)
+      - pattern: request.form[...]
+      - pattern: request.GET.get(...)
+      - pattern: request.GET[...]
+      - pattern: request.POST.get(...)
+      - pattern: request.POST[...]
+    pattern-sinks:
+      - pattern: $CURSOR.execute($QUERY, ...)
+      - pattern: $CURSOR.executemany($QUERY, ...)
+      - pattern: $MODEL.objects.raw($QUERY)
+    metadata:
+      cwe: "CWE-89: SQL Injection"
+      owasp: "A03:2021 - Injection"
+      category: security
+      confidence: MEDIUM
+
+  - id: python.security.sql-injection.raw-sql
+    languages: [python]
+    severity: WARNING
+    message: >
+      使用了 raw()/extra()/RawSQL 等直接拼接 SQL 的接口，存在 SQL 注入风险。
+    patterns:
+      - pattern-either:
+          - pattern: $MODEL.objects.raw($QUERY)
+          - pattern: $MODEL.objects.extra(where=[$QUERY])
+          - pattern: RawSQL($SQL, ...)
+    metadata:
+      cwe: "CWE-89: SQL Injection"
+      owasp: "A03:2021 - Injection"
+      category: security
+      confidence: MEDIUM
+
+  # ---------------- 命令注入 ----------------
+  - id: python.security.command-injection.os-system
+    languages: [python]
+    severity: ERROR
+    message: >
+      使用 os.system / os.popen 执行拼接了用户输入的命令，存在命令注入风险。
+      应改用 subprocess 并传入参数列表（list 形式、shell=False），或对输入做严格白名单校验。
+    patterns:
+      - pattern-either:
+          - pattern: os.system($CMD)
+          - pattern: os.popen($CMD)
+          - pattern: os.system(f"...{...}...")
+          - pattern: os.popen(f"...{...}...")
+    metadata:
+      cwe: "CWE-78: OS Command Injection"
+      owasp: "A03:2021 - Injection"
+      category: security
+      confidence: HIGH
+
+  - id: python.security.command-injection.subprocess-shell
+    languages: [python]
+    severity: ERROR
+    message: >
+      使用 shell=True 执行包含变量的命令，存在命令注入风险。
+      应使用参数列表（如 subprocess.run(["cmd", arg])）并将 shell 设为 False。
+    patterns:
+      - pattern-either:
+          - pattern: subprocess.$FUNC($CMD, shell=True, ...)
+          - pattern: subprocess.$FUNC($CMD, shell = True, ...)
+    metadata:
+      cwe: "CWE-78: OS Command Injection"
+      owasp: "A03:2021 - Injection"
+      category: security
+      confidence: HIGH
+
+  # ---------------- XSS ----------------
+  - id: python.security.xss.mark-safe
+    languages: [python]
+    severity: ERROR
+    message: >
+      对用户可控的内容调用 mark_safe 或使用 |safe 过滤器，关闭了自动转义，存在 XSS 风险。
+      应保持自动转义，或对内容做严格的输出编码/白名单清洗。
+    patterns:
+      - pattern-either:
+          - pattern: mark_safe($VAR)
+          - pattern: django.utils.safestring.mark_safe($VAR)
+          - pattern: flask.Markup($VAR)
+          - pattern: Markup($VAR)
+    metadata:
+      cwe: "CWE-79: Cross-site Scripting (XSS)"
+      owasp: "A03:2021 - Injection"
+      category: security
+      confidence: MEDIUM
+
+  - id: python.security.xss.autoescape-off
+    languages: [python]
+    severity: WARNING
+    message: >
+      关闭了 Jinja2 自动转义（autoescape=False），存在 XSS 风险。
+    pattern: |
+      Environment(..., autoescape=False)
+    metadata:
+      cwe: "CWE-79: Cross-site Scripting (XSS)"
+      owasp: "A03:2021 - Injection"
+      category: security
+      confidence: HIGH
+
+  # ---------------- 路径穿越（taint） ----------------
+  - id: python.security.path-traversal.open-user-input
+    mode: taint
+    languages: [python]
+    severity: ERROR
+    message: >
+      用户输入未经校验直接用于文件路径并打开/发送，存在路径穿越风险。
+      应对路径做规范化与白名单校验（限制在基础目录内），并拒绝 ".." 等穿越片段。
+    pattern-sources:
+      - pattern: request.args.get(...)
+      - pattern: request.args[...]
+      - pattern: request.form.get(...)
+      - pattern: request.form[...]
+      - pattern: request.GET.get(...)
+      - pattern: request.GET[...]
+      - pattern: request.POST.get(...)
+      - pattern: request.POST[...]
+      - pattern: request.data
+    pattern-sinks:
+      - pattern: send_file($X)
+      - pattern: send_from_directory($DIR, $X)
+      - pattern: open($X)
+      - pattern: os.open($X)
+    metadata:
+      cwe: "CWE-22: Path Traversal"
+      owasp: "A01:2021 - Broken Access Control"
+      category: security
+      confidence: MEDIUM
+
+  # ---------------- XXE ----------------
+  - id: python.security.xxe.unsafe-xml-parse
+    languages: [python]
+    severity: ERROR
+    message: >
+      使用标准库 xml.etree.ElementTree 或 lxml 默认配置解析 XML，可能触发 XXE（外部实体注入）。
+      应使用 defusedxml 等安全解析库，或禁用外部实体（resolve_entities=False、no_network=True）。
+    patterns:
+      - pattern-either:
+          - pattern: $ET.fromstring($XML)
+          - pattern: $ET.parse($XML)
+          - pattern: xml.dom.minidom.parseString($XML)
+          - pattern: xml.dom.minidom.parse($XML)
+      - pattern-regex: import\s+(xml\.etree\.ElementTree|lxml\.etree)
+    metadata:
+      cwe: "CWE-611: XML External Entity (XXE)"
+      owasp: "A03:2021 - Injection"
+      category: security
+      confidence: MEDIUM

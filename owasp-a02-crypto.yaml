@@ -1,0 +1,106 @@
+rules:
+  - id: python.security.crypto.md5-hash
+    languages: [python]
+    severity: ERROR
+    message: >
+      使用 MD5 进行哈希运算。MD5 已被证明存在碰撞攻击，不应用于密码哈希或完整性校验。
+      密码请使用 bcrypt / argon2 / scrypt；完整性校验请使用 SHA-256 及以上。
+    patterns:
+      - pattern-either:
+          - pattern: hashlib.md5(...)
+          - pattern: hashlib.new('md5', ...)
+          - pattern: hashlib.new("md5", ...)
+    metadata:
+      cwe: "CWE-328: Use of a Weak Hash"
+      owasp: "A02:2021 - Cryptographic Failures"
+      category: security
+      confidence: HIGH
+
+  - id: python.security.crypto.sha1-hash
+    languages: [python]
+    severity: ERROR
+    message: >
+      使用 SHA-1 进行哈希运算。SHA-1 已被证明存在碰撞攻击，不应用于安全敏感场景。
+      请改用 SHA-256 及以上。
+    patterns:
+      - pattern-either:
+          - pattern: hashlib.sha1(...)
+          - pattern: hashlib.new('sha1', ...)
+          - pattern: hashlib.new("sha1", ...)
+    metadata:
+      cwe: "CWE-328: Use of a Weak Hash"
+      owasp: "A02:2021 - Cryptographic Failures"
+      category: security
+      confidence: HIGH
+
+  - id: python.security.crypto.weak-cipher
+    languages: [python]
+    severity: ERROR
+    message: >
+      使用了 DES / 3DES / ECB 等弱加密算法或模式，易被暴力破解或遭受重放攻击。
+      请改用 AES-GCM 等认证加密算法，并避免 ECB 模式。
+    patterns:
+      - pattern-either:
+          - pattern: DES.new(...)
+          - pattern: DES3.new(...)
+          - pattern: ARC4.new(...)
+          - pattern: ARC2.new(...)
+          - pattern: Blowfish.new(...)
+          - pattern: AES.new($KEY, AES.MODE_ECB)
+          - pattern: hashlib.new('md4', ...)
+          - pattern: hashlib.new("md4", ...)
+    metadata:
+      cwe: "CWE-327: Use of a Broken or Risky Cryptographic Algorithm"
+      owasp: "A02:2021 - Cryptographic Failures"
+      category: security
+      confidence: HIGH
+
+  - id: python.security.crypto.ecb-mode
+    languages: [python]
+    severity: WARNING
+    message: >
+      使用 ECB 分组加密模式，相同明文块会加密成相同密文块，无法保证机密性。
+      请改用 CBC（配合随机 IV）或 GCM 等认证加密模式。
+    pattern: AES.MODE_ECB
+    metadata:
+      cwe: "CWE-327: Use of a Broken or Risky Cryptographic Algorithm"
+      owasp: "A02:2021 - Cryptographic Failures"
+      category: security
+      confidence: HIGH
+
+  - id: python.security.crypto.insecure-random
+    languages: [python]
+    severity: WARNING
+    message: >
+      使用 random 模块生成安全敏感的随机值（如令牌、会话 ID、密钥）。
+      random 是可预测的伪随机数，应改用 secrets 模块（secrets.token_hex 等）。
+    patterns:
+      - pattern-either:
+          - pattern: random.randint(...)
+          - pattern: random.randrange(...)
+          - pattern: random.choice(...)
+          - pattern: random.random()
+    metadata:
+      cwe: "CWE-330: Use of Insufficiently Random Values"
+      owasp: "A02:2021 - Cryptographic Failures"
+      category: security
+      confidence: MEDIUM
+
+  - id: python.security.crypto.hardcoded-key
+    languages: [python]
+    severity: ERROR
+    message: >
+      在源码中硬编码了加密密钥/口令。密钥一旦泄露即可解密全部数据。
+      应从环境变量或密钥管理服务（KMS/Vault）中读取密钥。
+    patterns:
+      - pattern-either:
+          - pattern: $NAME = "..."
+          - pattern: $NAME = '...'
+      - metavariable-regex:
+          metavariable: $NAME
+          regex: (?i)(password|passwd|pwd|secret|key|api_?key|token|credential|private_?key)
+    metadata:
+      cwe: "CWE-798: Use of Hard-coded Credentials"
+      owasp: "A02:2021 - Cryptographic Failures"
+      category: security
+      confidence: LOW

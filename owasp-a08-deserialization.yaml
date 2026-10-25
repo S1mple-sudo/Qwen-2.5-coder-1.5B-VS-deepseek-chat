@@ -1,0 +1,63 @@
+rules:
+  - id: python.security.deserialization.pickle
+    languages: [python]
+    severity: ERROR
+    message: >
+      使用 pickle 反序列化不可信数据，存在远程代码执行（RCE）风险。
+      切勿用 pickle 处理不可信输入；如需序列化请使用 JSON 等安全格式。
+    patterns:
+      - pattern-either:
+          - pattern: pickle.load(...)
+          - pattern: pickle.loads(...)
+    metadata:
+      cwe: "CWE-502: Deserialization of Untrusted Data"
+      owasp: "A08:2021 - Software and Data Integrity Failures"
+      category: security
+      confidence: HIGH
+
+  - id: python.security.deserialization.yaml-unsafe-load
+    languages: [python]
+    severity: ERROR
+    message: >
+      使用 yaml.load 且未使用 safe_load，可能通过构造 YAML 触发任意对象构造（RCE）。
+      请改用 yaml.safe_load。
+    pattern: yaml.load(...)
+    metadata:
+      cwe: "CWE-502: Deserialization of Untrusted Data"
+      owasp: "A08:2021 - Software and Data Integrity Failures"
+      category: security
+      confidence: HIGH
+
+  - id: python.security.deserialization.eval-exec
+    languages: [python]
+    severity: ERROR
+    message: >
+      对不可信输入调用 eval / exec，存在任意代码执行风险。
+      应避免使用 eval/exec，改用更安全的替代方案（如 ast.literal_eval、白名单解析）。
+    patterns:
+      - pattern-either:
+          - pattern: eval($ARG)
+          - pattern: exec($ARG)
+          - pattern: eval($ARG, ...)
+          - pattern: exec($ARG, ...)
+    metadata:
+      cwe: "CWE-95: Eval Injection"
+      owasp: "A08:2021 - Software and Data Integrity Failures"
+      category: security
+      confidence: HIGH
+
+  - id: python.security.deserialization.marshal-shelve
+    languages: [python]
+    severity: WARNING
+    message: >
+      使用 marshal / shelve 反序列化数据，同样存在不可信数据反序列化风险。
+      优先使用 JSON 等安全格式。
+    patterns:
+      - pattern-either:
+          - pattern: marshal.loads(...)
+          - pattern: marshal.load(...)
+    metadata:
+      cwe: "CWE-502: Deserialization of Untrusted Data"
+      owasp: "A08:2021 - Software and Data Integrity Failures"
+      category: security
+      confidence: MEDIUM

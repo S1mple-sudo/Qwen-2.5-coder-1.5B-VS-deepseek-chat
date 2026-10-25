@@ -1,0 +1,36 @@
+rules:
+  - id: python.security.logging.sensitive-data
+    languages: [python]
+    severity: WARNING
+    message: >
+      将密码/令牌/密钥等敏感信息写入日志或打印到控制台，存在敏感信息泄露风险。
+      应对敏感字段做脱敏后再记录，且不要打印凭证类数据。
+    patterns:
+      - pattern-either:
+          - pattern: $LOGGER.$LVL($SENSITIVE)
+          - pattern: print($SENSITIVE)
+      - metavariable-regex:
+          metavariable: $SENSITIVE
+          regex: (?i)(password|secret|token|api[_-]?key|credential|passwd|authorization|session[_-]?id)
+    metadata:
+      cwe: "CWE-532: Insertion of Sensitive Information into Log File"
+      owasp: "A09:2021 - Security Logging and Monitoring Failures"
+      category: security
+      confidence: MEDIUM
+
+  - id: python.security.logging.exception-broad
+    languages: [python]
+    severity: WARNING
+    message: >
+      使用裸 except 或吞掉异常，可能掩盖安全事件且不利于审计。
+      应记录结构化日志并保留足够的上下文用于安全监控。
+    pattern: |
+      try:
+        $BODY
+      except:
+        pass
+    metadata:
+      cwe: "CWE-778: Insufficient Logging"
+      owasp: "A09:2021 - Security Logging and Monitoring Failures"
+      category: security
+      confidence: LOW

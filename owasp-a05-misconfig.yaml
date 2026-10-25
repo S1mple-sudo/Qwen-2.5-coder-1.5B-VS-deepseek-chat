@@ -1,0 +1,68 @@
+rules:
+  - id: python.security.misconfig.flask-debug
+    languages: [python]
+    severity: ERROR
+    message: >
+      在生产环境开启 Flask DEBUG 模式，可能泄露堆栈、源码等敏感信息。
+      生产环境应关闭 DEBUG。
+    patterns:
+      - pattern-either:
+          - pattern: app.debug = True
+          - pattern: app.run(debug=True)
+          - pattern: app.run(..., debug=True)
+          - pattern: app.config['DEBUG'] = True
+          - pattern: app.config["DEBUG"] = True
+    metadata:
+      cwe: "CWE-489: Active Debug Code"
+      owasp: "A05:2021 - Security Misconfiguration"
+      category: security
+      confidence: HIGH
+
+  - id: python.security.misconfig.django-debug
+    languages: [python]
+    severity: ERROR
+    message: >
+      在生产环境开启 Django DEBUG 模式，会泄露堆栈与配置等敏感信息。
+    pattern: DEBUG = True
+    metadata:
+      cwe: "CWE-489: Active Debug Code"
+      owasp: "A05:2021 - Security Misconfiguration"
+      category: security
+      confidence: HIGH
+
+  - id: python.security.misconfig.hardcoded-secret
+    languages: [python]
+    severity: ERROR
+    message: >
+      在源码中硬编码了密码/密钥/令牌等敏感信息。
+      应从环境变量或密钥管理服务中读取，避免提交到代码库。
+    patterns:
+      - pattern-either:
+          - pattern: $NAME = "..."
+          - pattern: $NAME = '...'
+      - metavariable-regex:
+          metavariable: $NAME
+          # 子串匹配语义：变量名只要包含关键词即命中（DB_PASSWORD / SECRET_KEY / api_key_v2 ...）。
+          # 旧写法 (?i)(password|...) 在 semgrep 中按 fullmatch 处理，带下划线/前后缀的变量名不命中。
+          regex: (?i).*(password|passwd|pwd|secret|api_?key|token|credential|private_?key|access_?key).*
+    metadata:
+      cwe: "CWE-798: Use of Hard-coded Credentials"
+      owasp: "A05:2021 - Security Misconfiguration"
+      category: security
+      confidence: LOW
+
+  - id: python.security.misconfig.permissive-cors
+    languages: [python]
+    severity: WARNING
+    message: >
+      将 CORS 配置为允许任意来源（*），可能带来跨域安全风险。
+      应明确指定可信来源白名单。
+    patterns:
+      - pattern-either:
+          - pattern: CORS(app, origins=["*"])
+          - pattern: allow_origins=["*"]
+    metadata:
+      cwe: "CWE-942: Permissive Cross-domain Policy with Untrusted Domains"
+      owasp: "A05:2021 - Security Misconfiguration"
+      category: security
+      confidence: MEDIUM

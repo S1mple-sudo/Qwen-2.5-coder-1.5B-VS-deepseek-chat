@@ -1,0 +1,47 @@
+rules:
+  - id: python.security.access-control.csrf-exempt
+    languages: [python]
+    severity: ERROR
+    message: >
+      使用 @csrf_exempt 关闭了 CSRF 防护，存在跨站请求伪造风险。
+      应保持 CSRF 防护开启，仅在确有必要且已做其它防护时豁免。
+    pattern: csrf_exempt
+    metadata:
+      cwe: "CWE-352: Cross-Site Request Forgery (CSRF)"
+      owasp: "A01:2021 - Broken Access Control"
+      category: security
+      confidence: HIGH
+
+  - id: python.security.access-control.allow-any-permission
+    languages: [python]
+    severity: ERROR
+    message: >
+      使用 AllowAny 权限类，使接口无需认证即可访问，可能造成越权。
+      应根据业务设置 IsAuthenticated 或自定义权限类。
+    patterns:
+      - pattern-either:
+          - pattern: permission_classes = [AllowAny]
+          - pattern: permission_classes = (AllowAny,)
+          - pattern: |
+              @permission_classes([AllowAny])
+    metadata:
+      cwe: "CWE-862: Missing Authorization"
+      owasp: "A01:2021 - Broken Access Control"
+      category: security
+      confidence: MEDIUM
+
+  - id: python.security.access-control.unsafe-deserialization-decorator
+    languages: [python]
+    severity: WARNING
+    message: >
+      使用了 login_not_required / login_exempt 等豁免认证的装饰器。
+      请确认该路由确实无需认证，否则存在未授权访问风险。
+    patterns:
+      - pattern-either:
+          - pattern: login_not_required
+          - pattern: login_exempt
+    metadata:
+      cwe: "CWE-306: Missing Authentication for Critical Function"
+      owasp: "A07:2021 - Identification and Authentication Failures"
+      category: security
+      confidence: MEDIUM
