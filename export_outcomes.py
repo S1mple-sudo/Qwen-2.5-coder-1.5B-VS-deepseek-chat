@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.preservation import behavior_applicable, behavior_preserved  # noqa: E402
 from src.remediation import elimination_ok  # noqa: E402
 from src.report import RULES_DIR, run_functional_test  # noqa: E402
-from src.semgrep_runner import run_semgrep_batch  # noqa: E402
+from src.semgrep_runner import find_semgrep, run_semgrep_batch  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -39,7 +39,16 @@ def export(questions_path, model_output_path, out_path):
             codes[d["id"]] = d.get("code") or d.get("fixed_code") or ""
 
     semi = [q for q in ev if q["eval_method"] == "semgrep"]
-    findings = run_semgrep_batch({q["id"]: codes.get(q["id"], "") for q in semi}, RULES_DIR)
+    if semi and find_semgrep() is None:
+        print(f"[error] 未找到 semgrep：{len(semi)} 道 semgrep 题会被误记为「未消除」，拒绝生成。",
+              file=sys.stderr)
+        print("        安装：pip install semgrep  或设置 SEMGREP_BIN", file=sys.stderr)
+        raise SystemExit(2)
+    try:
+        findings = run_semgrep_batch({q["id"]: codes.get(q["id"], "") for q in semi}, RULES_DIR)
+    except RuntimeError as e:
+        print(f"[error] semgrep 跑不起来，结果不可信，已中止：{e}", file=sys.stderr)
+        raise SystemExit(2)
 
     rows = []
     for q in ev:

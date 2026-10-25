@@ -66,10 +66,12 @@
 │   ├── cheat_check.py       # 评分器自检（删行 / pass 作弊答案）
 │   ├── export_outcomes.py   # 逐题判定导出（画图 / 复盘）
 │   ├── run_baseline.py      # 接大模型跑 baseline（零依赖，产出 report 可读的 JSONL）
+│   ├── run_arm.py           # 一条命令跑完一臂（baseline → report → outcomes，PyCharm 友好）
 │   ├── build_viewer.py      # 生成 questions_viewer.html 题目浏览器
 │   ├── plot_compare.py      # 模型横评图（逐题胜负矩阵 + 分轨汇总）
 │   └── semgrep_runner.py    # Semgrep 运行封装 + 可执行文件定位
 ├── semgrep/rules/           # 按 OWASP 分类的 Semgrep 规则（8 个文件）
+├── prompts/hardened_generic.md  # 强化 system 提示词（第三臂对比用）
 ├── docs/baseline_compare.png  # 基线对比图（README 引用）
 ├── tests/
 │   ├── conftest.py          # 夹具与工具函数
@@ -355,6 +357,21 @@ python src/report.py --selfcheck     # 末尾会打印 [自检] 行
 pytest tests/test_scorer_robustness.py -m semgrep -q
 ```
 
+**强化提示词实验（2 模型 × 3 档提示词，6 臂全部完成）**：结果、机制分析与预注册判据见
+[docs/prompt_experiment.md](docs/prompt_experiment.md)。一句话结论：**约束型提示词对弱模型无益、对强模型有害**。
+
+| 漏洞消除率 | 默认 | v1（9 条清单） | v2（5 条，允许依赖） |
+|---|---|---|---|
+| Qwen-1.5B | 29.07% | 25.00% | 30.23% |
+| deepseek-chat | **86.63%** | 73.84% | **69.77%** |
+
+- Qwen 三臂都在 50 题上下（43–52），**天花板没变**：提示词最多"不拖累"；
+- deepseek 越改越差（149 → 127 → 120）：它的 149 个胜利里 **125 个靠">1.5× 扩写"**，
+  而"最小改动 / 保留结构"类约束把答案长度砍到 58%，等于禁止它使用制胜策略。
+
+> 口径提醒：functional 轨是**关键词式**判定、semgrep 轨是**安全替代记号**判定，评分器天然偏爱"补全缺失控制"（即扩写型）解法。
+> 所以这里不能得出"提示词越严格越好"——恰恰相反。任何 prompt 对比都必须标注评分器版本。
+
 复现：
 
 ```bash
@@ -370,6 +387,31 @@ python src/report.py --model-output data/processed/qwen1.5b_out.jsonl --report d
 # 逐题判定（画图/复盘用）
 python src/export_outcomes.py --model-output data/processed/qwen1.5b_out.jsonl \
     --out data/processed/qwen1.5b_outcomes.jsonl
+```
+
+### 第三臂：强化提示词（可选）
+
+同一模型、同一批题，只换 system 提示词，用来区分「能力不够」还是「提示词没说清」：
+
+| 臂 | 命令 |
+|---|---|
+| A. 默认提示词 | `python src/run_baseline.py --model <m> --out data/processed/<m>_default.jsonl` |
+| B. 强化提示词 | `python src/run_baseline.py --model <m> --prompt-file prompts/hardened_generic.md --out data/processed/<m>_hardened.jsonl` |
+
+- `prompts/hardened_generic.md` 只写**通用**要求（替换而非删除、保留函数签名、密钥从环境变量取、
+  输入必须参数化/白名单、安全开关必须真正打开、禁止 `pass` 占位），
+  **不点名具体 API**（不出现 `json.loads` / `sha256` / `shell=False` 这类本仓库判定用的记号），
+  否则等于把答案喂给模型，分数会虚高；
+- 输出 JSONL 带 `prompt` 字段（`default` / `hardened_generic`），同一模型的两次结果不会混；
+- 推荐做 **2×2**：`{qwen, deepseek} × {默认, 强化}`，才能看出「提示词对弱模型的增益是否更大」。
+
+```bash
+# 以本地 qwen 为例（Ollama）
+python src/run_baseline.py --base-url http://127.0.0.1:11434/v1 \
+    --model qwen2.5-coder:1.5b --max-tokens 1024 --prompt-file prompts/hardened_generic.md \
+    --out data/processed/qwen1.5b_hardened.jsonl
+python src/report.py --model-output data/processed/qwen1.5b_hardened.jsonl \
+    --report data/processed/qwen1.5b_hardened_report.json
 ```
 
 > **口径备注**

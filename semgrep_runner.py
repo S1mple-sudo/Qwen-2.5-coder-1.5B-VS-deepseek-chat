@@ -153,7 +153,14 @@ def run_semgrep_batch_detail(codes: dict, config_dir: str, timeout: int = 600) -
             with open(os.path.join(td, f"{qid}.py"), "w", encoding="utf-8") as f:
                 f.write(code or "")
         cmd = [semgrep_bin, "scan", "--config", config_dir, "--json", "--no-git-ignore", td]
-        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", timeout=timeout)
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", timeout=timeout)
+        except OSError as e:
+            raise RuntimeError(
+                f"semgrep 无法启动（{type(e).__name__}: {e}）。"
+                f"常见原因：可执行文件被 Application Control / 杀软拦截、或路径失效；"
+                f"可用环境变量 SEMGREP_BIN 指向可用的 semgrep。"
+            )
         if proc.returncode not in (0, 1):
             raise RuntimeError(f"semgrep 运行失败 (rc={proc.returncode}): {proc.stderr[:2000]}")
         try:

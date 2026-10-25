@@ -59,11 +59,24 @@ def load_questions(path=QUESTIONS):
     return qs
 
 
-def build_messages(q):
+def load_system_prompt(prompt_file=None, inline=None):
+    """返回 (system 提示词, prompt_id)。
+
+    prompt_id 会写进输出 JSONL，便于同一模型多套提示词横向对比（如 "default" / "hardened_generic"）。
+    """
+    if inline:
+        return inline, "inline"
+    if prompt_file:
+        with open(prompt_file, encoding="utf-8") as f:
+            return f.read().strip(), os.path.splitext(os.path.basename(prompt_file))[0]
+    return SYSTEM_PROMPT, "default"
+
+
+def build_messages(q, system_prompt=SYSTEM_PROMPT):
     """题干 = description + 漏洞代码块（与 tests/test_evaluate.py 的接入示例一致）。"""
     user = (q.get("description") or "") + "\n```python\n" + (q.get("vulnerable_code") or "") + "\n```"
     return [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": user},
     ]
 
@@ -145,10 +158,14 @@ def call_model(base_url, model, api_key, messages, timeout=180, retries=3, tempe
 # 主流程
 # ---------------------------------------------------------------------------
 def load_done(path):
-    """读已有输出，返回 {id: code}（断点续跑用）。"""
+    """读已有输出，返回 ({id: code}, 该文件里出现过的 prompt 标识集合)。
+
+    断点续跑靠它；prompt 集合用于识别「同一个输出文件被拿去跑另一套提示词」的误用。
+    """
     done = {}
+    prompts = set()
     if not os.path.exists(path):
-        return done
+        return done, prompts
     with open(path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -160,7 +177,8 @@ def load_done(path):
                 continue  # 上次中断留下的半行，忽略
             if d.get("id") and d.get("code"):
                 done[d["id"]] = d["code"]
-    return done
+                prompts.add(d.get("prompt") or "default")
+    return done, prompts
 
 
 def main():
@@ -180,7 +198,12 @@ def main():
     ap.add_argument("--max-tokens", type=int, default=2048,
                     help="单次生成上限（本地小模型建议 1024~2048，避免跑飞）")
     ap.add_argument("--dry-run", action="store_true", help="只打印提示词与题量，不发请求、不写文件")
+    ap.add_argument("--prompt-file", default=None,
+                    help="强化提示词文件（如 prompts/hardened_generic.md）；缺省用内置精简 system 提示词")
+    ap.add_argument("--system", default=None, help="直接给 system 提示词（优先级高于 --prompt-file）")
     args = ap.parse_args()
+
+    system_prompt, prompt_id = load_system_prompt(args.prompt_file, args.system)
 
     if _is_local_url(args.base_url) and not args.api_key:
         args.api_key = "local"  # 本地 OpenAI 兼容服务一般不校验 key
@@ -190,17 +213,24 @@ def main():
     if args.limit:
         questions = questions[:args.limit]
 
-    done = {} if args.dry_run else load_done(args.out_path)
+    done, seen_prompts = ({}, set()) if args.dry_run else load_done(args.out_path)
+    if seen_prompts and prompt_id not in seen_prompts:
+        print(f"[error] {args.out_path} 里已有另一套提示词的结果（{', '.join(sorted(seen_prompts))}），"
+              f"本次是 {prompt_id}。", file=sys.stderr)
+        print("        继续写会把两种提示词的答案混在同一个文件里；换 --out，或先删掉该文件。",
+              file=sys.stderr)
+        return 2
     todo = [q for q in questions if q["id"] not in done]
 
     print("=" * 60)
     print(f"可评测题: {len(questions)}   已完成: {len(done)}   本次待跑: {len(todo)}")
     print(f"端点: {args.base_url.rstrip('/')}/chat/completions   模型: {args.model}")
+    print(f"提示词: {prompt_id}（{len(system_prompt)} 字符）")
     print("=" * 60)
 
     if args.dry_run:
         for q in questions[:3]:
-            msgs = build_messages(q)
+            msgs = build_messages(q, system_prompt)
             print(f"\n--- {q['id']}  {q['cwe']}  {q['eval_method']} ---")
             print(f"[system] {msgs[0]['content']}")
             print(f"[user] {msgs[1]['content'][:600]}...")
@@ -223,7 +253,7 @@ def main():
         for i, q in enumerate(todo, 1):
             try:
                 content, usage, finish = call_model(
-                    args.base_url, args.model, args.api_key, build_messages(q),
+                    args.base_url, args.model, args.api_key, build_messages(q, system_prompt),
                     timeout=args.timeout, retries=args.retries, temperature=args.temperature,
                     max_tokens=args.max_tokens,
                 )
@@ -238,6 +268,7 @@ def main():
                 "id": q["id"],
                 "code": code,
                 "model": args.model,
+                "prompt": prompt_id,
                 "finish_reason": finish,
                 "usage": usage,
             }, ensure_ascii=False) + "\n")

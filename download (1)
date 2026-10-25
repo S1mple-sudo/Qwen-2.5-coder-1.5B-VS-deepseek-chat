@@ -1,4 +1,4 @@
-# ---------- Python ----------
+﻿# ---------- Python ----------
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -27,6 +27,9 @@ questions.backup-*.jsonl
 baseline_report.json
 dist/
 *.log
+
+# ---------- 临时脚本（不对外）----------
+_tmp_*
 
 # ---------- 内部工作记录（不对外）----------
 .workbuddy/

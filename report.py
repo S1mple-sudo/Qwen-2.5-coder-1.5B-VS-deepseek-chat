@@ -110,7 +110,13 @@ def main():
             if q["eval_method"] == "semgrep":
                 candidate = (model_out or {}).get(q["id"]) if model_out is not None else q["fixed_code"]
                 sg_codes[q["id"]] = candidate or ""
-        semgrep_findings = run_semgrep_batch(sg_codes, RULES_DIR)
+        try:
+            semgrep_findings = run_semgrep_batch(sg_codes, RULES_DIR)
+        except RuntimeError as e:
+            print(f"[error] semgrep 跑不起来，semgrep 轨无法判定：{e}", file=sys.stderr)
+            print("        已中止，避免只输出半张指标。可用 SEMGREP_BIN 指向可用的 semgrep。",
+                  file=sys.stderr)
+            return 3
 
     # 计数
     eliminated = 0        # 漏洞消除题数（可判定的）
